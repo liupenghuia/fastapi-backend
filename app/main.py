@@ -77,7 +77,7 @@ app.include_router(api_router, prefix="/api/v1")
 @app.get("/", tags=["🏠 根路径"])
 async def root():
     """
-    API 根路径
+    API 根路径 （还会）
     返回应用基本信息
     """
     return {
