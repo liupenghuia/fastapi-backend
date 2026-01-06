@@ -1,0 +1,19 @@
+# FastAPI 核心依赖（兼容旧版本）
+fastapi>=0.68.0,<0.84.0
+uvicorn[standard]>=0.15.0,<0.18.0
+
+# 数据库
+sqlalchemy>=1.4.0,<2.0.0
+aiosqlite>=0.17.0
+
+# 安全认证
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+python-multipart>=0.0.5
+
+# 数据验证（使用 v1 版本，兼容性更好）
+pydantic>=1.8.0,<2.0.0
+email-validator>=1.1.0
+
+# 开发工具
+python-dotenv>=0.19.0
