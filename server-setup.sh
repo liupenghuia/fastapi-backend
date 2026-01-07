@@ -21,22 +21,37 @@ fi
 echo "📋 检测到操作系统: $OS"
 echo ""
 
-# 1. 检查系统依赖
-echo "📦 步骤 1/8: 检查系统依赖..."
-echo "Python 3.8 和 Nginx 已安装，跳过..."
-echo "✅ 系统依赖检查完成"
+# 1. 更新系统并安装依赖
+echo "📦 步骤 1/8: 安装系统依赖..."
+if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
+    sudo apt update
+    sudo apt install -y python3 python3-pip python3-venv nginx
+elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ] || [ "$OS" = "alinux" ] || [ "$OS" = "alios" ]; then
+    echo "检测到基于 RHEL/CentOS 的系统，使用 yum 安装..."
+    sudo yum update -y
+    sudo yum install -y python3 python3-pip nginx
+    
+    # 阿里云 Linux 可能需要启用 EPEL 仓库
+    if [ "$OS" = "alinux" ] || [ "$OS" = "alios" ]; then
+        echo "检测到阿里云 Linux，配置额外依赖..."
+        sudo yum install -y epel-release 2>/dev/null || true
+    fi
+else
+    echo "⚠️  未识别的操作系统: $OS"
+    echo "尝试使用 yum 安装..."
+    sudo yum update -y
+    sudo yum install -y python3 python3-pip nginx || {
+        echo "❌ 安装失败，请手动安装: python3 python3-pip nginx"
+        exit 1
+    }
+fi
+echo "✅ 系统依赖安装完成"
 
 # 2. 创建 Python 虚拟环境
 echo ""
 echo "🐍 步骤 2/8: 创建 Python 虚拟环境..."
-# 使用 Python 3.8
-if [ -d "venv" ]; then
-    echo "虚拟环境已存在，跳过创建"
-else
-    python3.8 -m venv venv
-fi
+python3 -m venv venv
 source venv/bin/activate
-python --version
 echo "✅ 虚拟环境创建完成"
 
 # 3. 安装 Python 依赖

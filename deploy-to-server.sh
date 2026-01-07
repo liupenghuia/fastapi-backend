@@ -51,47 +51,16 @@ echo "✅ 目录创建完成"
 # 3. 同步代码到服务器
 echo ""
 echo "📦 步骤 3/5: 同步项目文件到服务器..."
+echo "排除文件: venv, __pycache__, *.pyc, .git, app.db"
 
-# 检查服务器是否有 rsync
-if ssh $SSH_USER@$SERVER_IP "command -v rsync" > /dev/null 2>&1; then
-    echo "使用 rsync 同步文件..."
-    rsync -avz --progress \
-      --exclude 'venv' \
-      --exclude '__pycache__' \
-      --exclude '*.pyc' \
-      --exclude '.git' \
-      --exclude 'app.db' \
-      --exclude '*.log' \
-      ./ $SSH_USER@$SERVER_IP:$DEPLOY_PATH/
-else
-    echo "⚠️  服务器未安装 rsync，使用 tar + scp 方式上传..."
-    
-    # 创建临时目录
-    TMP_DIR=$(mktemp -d)
-    TAR_FILE="$TMP_DIR/fastapi-backend.tar.gz"
-    
-    # 打包项目文件
-    echo "正在打包项目文件..."
-    tar -czf "$TAR_FILE" \
-      --exclude='venv' \
-      --exclude='__pycache__' \
-      --exclude='*.pyc' \
-      --exclude='.git' \
-      --exclude='app.db' \
-      --exclude='*.log' \
-      .
-    
-    # 上传到服务器
-    echo "正在上传到服务器..."
-    scp "$TAR_FILE" "$SSH_USER@$SERVER_IP:$DEPLOY_PATH/fastapi-backend.tar.gz"
-    
-    # 在服务器上解压
-    echo "正在服务器上解压..."
-    ssh $SSH_USER@$SERVER_IP "cd $DEPLOY_PATH && tar -xzf fastapi-backend.tar.gz && rm fastapi-backend.tar.gz"
-    
-    # 清理临时文件
-    rm -rf "$TMP_DIR"
-fi
+rsync -avz --progress \
+  --exclude 'venv' \
+  --exclude '__pycache__' \
+  --exclude '*.pyc' \
+  --exclude '.git' \
+  --exclude 'app.db' \
+  --exclude '*.log' \
+  ./ $SSH_USER@$SERVER_IP:$DEPLOY_PATH/
 
 echo "✅ 文件同步完成"
 

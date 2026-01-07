@@ -74,12 +74,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 添加请求日志中间件
-app.add_middleware(RequestLoggingMiddleware)
-
 # 注册 API 路由
 app.include_router(api_router, prefix="/api/v1")
-
 
 
 @app.get("/", tags=["🏠 根路径"])
