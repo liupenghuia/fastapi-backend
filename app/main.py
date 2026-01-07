@@ -8,7 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.database import init_db, close_db
+from app.core.logging_config import logger  # 导入日志
+from app.middleware import RequestLoggingMiddleware  # 导入日志中间件
 from app.api.v1.router import api_router
+
 
 
 @asynccontextmanager
@@ -18,16 +21,17 @@ async def lifespan(app: FastAPI):
     处理启动和关闭时的资源初始化和清理
     """
     # 启动时初始化数据库
-    print("🚀 正在初始化数据库...")
+    logger.info("🚀 正在初始化数据库...")
     await init_db()
-    print("✅ 数据库初始化完成")
+    logger.success("✅ 数据库初始化完成")
     
     yield
     
     # 关闭时清理资源
-    print("👋 正在关闭数据库连接...")
+    logger.info("👋 正在关闭数据库连接...")
     await close_db()
-    print("✅ 数据库连接已关闭")
+    logger.success("✅ 数据库连接已关闭")
+
 
 
 # 创建 FastAPI 应用实例
@@ -70,8 +74,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 添加请求日志中间件
+app.add_middleware(RequestLoggingMiddleware)
+
 # 注册 API 路由
 app.include_router(api_router, prefix="/api/v1")
+
 
 
 @app.get("/", tags=["🏠 根路径"])
