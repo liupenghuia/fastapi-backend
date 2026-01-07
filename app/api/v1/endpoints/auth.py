@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.core.security import create_access_token
 from app.crud.user import user_crud
 from app.schemas.user import UserCreate, UserResponse
+# from app.schemas import UserCreate, UserResponse  # 使用聚合导入
 from app.schemas.token import Token
 
 router = APIRouter()

@@ -571,7 +571,666 @@ async def get_current_user(
 
 ---
 
-## 10. 实战示例
+## 10. 数据库层详解
+
+### **10.1 数据库架构总览**
+
+FastAPI 项目的数据库层采用**分层架构**，每一层负责不同的职责：
+
+```
+📊 数据库层次架构：
+
+┌─────────────────────────────────────────┐
+│  ① 配置层 (.env)                        │
+│  DATABASE_URL, SECRET_KEY               │
+└────────────┬────────────────────────────┘
+             ↓
+┌─────────────────────────────────────────┐
+│  ② 连接层 (app/core/database.py)       │
+│  Engine, SessionMaker, get_db()         │
+└────────────┬────────────────────────────┘
+             ↓
+┌─────────────────────────────────────────┐
+│  ③ 模型层 (app/models/)                 │
+│  User (ORM 数据库表映射)                │
+└────────────┬────────────────────────────┘
+             ↓
+┌─────────────────────────────────────────┐
+│  ④ 数据验证层 (app/schemas/)            │
+│  UserCreate, UserResponse (Pydantic)    │
+└────────────┬────────────────────────────┘
+             ↓
+┌─────────────────────────────────────────┐
+│  ⑤ 操作层 (app/crud/)                   │
+│  UserCRUD (业务逻辑)                    │
+└────────────┬───────────────────────────┘
+             ↓
+┌─────────────────────────────────────────┐
+│  ⑥ 路由层 (app/api/v1/endpoints/)      │
+│  auth.py, users.py (API 端点)          │
+└─────────────────────────────────────────┘
+```
+
+---
+
+### **10.2 各层详解**
+
+#### **① 配置层 - `.env`**
+
+**作用：** 存储数据库连接配置
+
+```env
+# .env 文件
+DATABASE_URL="sqlite+aiosqlite:///./app.db"
+SECRET_KEY="your-secret-key"
+DEBUG=true
+```
+
+**说明：**
+- `sqlite` - 数据库类型
+- `aiosqlite` - 异步驱动
+- `///./app.db` - 数据库文件路径
+
+**如何切换到 MySQL：**
+```env
+DATABASE_URL="mysql+aiomysql://user:password@localhost:3306/dbname"
+```
+
+---
+
+#### **② 连接层 - `app/core/database.py`**
+
+**核心职责：**
+- ✅ 创建数据库引擎
+- ✅ 提供会话工厂
+- ✅ 依赖注入函数
+- ✅ 初始化数据库
+
+**关键代码：**
+
+```python
+# 1. 创建异步引擎
+engine = create_async_engine(
+    settings.DATABASE_URL,
+    echo=settings.DEBUG  # 调试时打印 SQL
+)
+
+# 2. 创建会话工厂
+async_session_maker = async_sessionmaker(
+    engine,
+    class_=AsyncSession,
+    expire_on_commit=False
+)
+
+# 3. ORM 基类
+class Base(DeclarativeBase):
+    pass
+
+# 4. 依赖注入函数（重要！）
+async def get_db() -> AsyncSession:
+    async with async_session_maker() as session:
+        try:
+            yield session          # 提供会话
+            await session.commit() # 成功则提交
+        except Exception:
+            await session.rollback() # 失败则回滚
+            raise
+        finally:
+            await session.close()    # 确保关闭
+```
+
+**工作流程：**
+```
+API 请求 
+  → Depends(get_db) 
+  → 创建 session 
+  → yield session (给路由函数使用)
+  → 路由函数执行数据库操作
+  → commit() 或 rollback()
+  → close() 关闭会话
+```
+
+---
+
+#### **③ 模型层 - `app/models/user.py`**
+
+**作用：** ORM 模型，定义数据库表结构
+
+```python
+class User(Base):
+    __tablename__ = "users"  # 数据库表名
+    
+    # 字段映射（Python ↔ 数据库）
+    id: Mapped[int] = mapped_column(
+        Integer, 
+        primary_key=True, 
+        autoincrement=True
+    )
+    email: Mapped[str] = mapped_column(
+        String(255), 
+        unique=True,      # 唯一约束
+        index=True,       # 创建索引
+        nullable=False    # 非空
+    )
+    username: Mapped[str] = mapped_column(
+        String(50), 
+        unique=True, 
+        index=True
+    )
+    hashed_password: Mapped[str] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc)
+    )
+```
+
+**映射关系：**
+```
+Python 类 User  ←→  数据库表 users
+   ├── id: Mapped[int]        ←→  id INT PRIMARY KEY
+   ├── email: Mapped[str]     ←→  email VARCHAR(255) UNIQUE
+   ├── username: Mapped[str]  ←→  username VARCHAR(50) UNIQUE
+   └── hashed_password        ←→  hashed_password VARCHAR(255)
+```
+
+**特殊方法：**
+```python
+def __repr__(self):
+    return f"<User(id={self.id}, username={self.username})>"
+
+# 使用
+user = User(...)
+print(user)  # <User(id=1, username=alice)>
+```
+
+---
+
+#### **④ 数据验证层 - `app/schemas/user.py`**
+
+**作用：** Pydantic 模型，验证 API 输入/输出
+
+```python
+# 基础类（共享字段）
+class UserBase(BaseModel):
+    email: EmailStr                    # 自动验证邮箱格式
+    username: str
+    full_name: Optional[str] = None
+
+# 创建请求（客户端 → 服务端）
+class UserCreate(UserBase):
+    password: str  # 明文密码（仅在创建时）
+
+# 更新请求
+class UserUpdate(BaseModel):
+    email: Optional[EmailStr] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    full_name: Optional[str] = None
+
+# 响应模型（服务端 → 客户端）
+class UserResponse(UserBase):
+    id: int
+    is_active: bool
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True  # 允许从 ORM 对象创建
+```
+
+**Schema vs Model 对比：**
+
+| 对比项 | Model (ORM) | Schema (Pydantic) |
+|-------|-------------|-------------------|
+| **位置** | `app/models/` | `app/schemas/` |
+| **继承** | `Base` (SQLAlchemy) | `BaseModel` (Pydantic) |
+| **用途** | 数据库映射 | 数据验证 |
+| **字段** | 数据库列 | API 输入/输出 |
+| **密码字段** | `hashed_password` (加密) | `password` (明文) |
+| **使用场景** | CRUD 操作 | 请求/响应 |
+
+---
+
+#### **⑤ 操作层 - `app/crud/user.py`**
+
+**作用：** 封装数据库操作的业务逻辑
+
+```python
+class UserCRUD:
+    # === 查询 ===
+    async def get_by_id(
+        self, 
+        db: AsyncSession, 
+        user_id: int
+    ) -> Optional[User]:
+        """根据 ID 查询用户"""
+        result = await db.execute(
+            select(User).where(User.id == user_id)
+        )
+        return result.scalar_one_or_none()
+    
+    async def get_by_email(
+        self, 
+        db: AsyncSession, 
+        email: str
+    ) -> Optional[User]:
+        """根据邮箱查询用户"""
+        result = await db.execute(
+            select(User).where(User.email == email)
+        )
+        return result.scalar_one_or_none()
+    
+    async def get_list(
+        self, 
+        db: AsyncSession, 
+        skip: int = 0, 
+        limit: int = 100
+    ) -> List[User]:
+        """获取用户列表（分页）"""
+        result = await db.execute(
+            select(User)
+            .offset(skip)
+            .limit(limit)
+            .order_by(User.id)
+        )
+        return list(result.scalars().all())
+    
+    # === 创建 ===
+    async def create(
+        self, 
+        db: AsyncSession, 
+        user_in: UserCreate  # ← Schema
+    ) -> User:  # → Model
+        """创建新用户"""
+        # 1. 密码加密
+        hashed_password = get_password_hash(user_in.password)
+        
+        # 2. 创建 ORM 对象
+        db_user = User(
+            email=user_in.email,
+            username=user_in.username,
+            hashed_password=hashed_password,
+            full_name=user_in.full_name
+        )
+        
+        # 3. 添加到会话
+        db.add(db_user)
+        await db.flush()  # 刷新获取自动生成的 ID
+        await db.refresh(db_user)  # 刷新对象状态
+        
+        return db_user
+    
+    # === 更新 ===
+    async def update(
+        self, 
+        db: AsyncSession, 
+        db_user: User,  # 现有用户对象
+        user_in: UserUpdate  # 更新数据
+    ) -> User:
+        """更新用户信息"""
+        # 只获取实际设置的字段
+        update_data = user_in.model_dump(exclude_unset=True)
+        
+        # 如果更新密码，需要加密
+        if "password" in update_data:
+            hashed = get_password_hash(update_data.pop("password"))
+            update_data["hashed_password"] = hashed
+        
+        # 更新字段
+        for field, value in update_data.items():
+            setattr(db_user, field, value)
+        
+        await db.flush()
+        await db.refresh(db_user)
+        return db_user
+    
+    # === 删除 ===
+    async def delete(
+        self, 
+        db: AsyncSession, 
+        user_id: int
+    ) -> User:
+        """删除用户"""
+        user = await self.get_by_id(db, user_id)
+        if user:
+            await db.delete(user)
+            await db.flush()
+        return user
+```
+
+**关键点：**
+- 接收 `Schema` 对象（UserCreate, UserUpdate）
+- 返回 `Model` 对象（User）
+- 使用 `AsyncSession` 操作数据库
+- `flush()` 刷新会话，`refresh()` 刷新对象
+
+---
+
+#### **⑥ 路由层 - `app/api/v1/endpoints/users.py`**
+
+**作用：** 处理 HTTP 请求，调用 CRUD
+
+```python
+@router.post(
+    "/",
+    response_model=UserResponse,  # ← 返回 Schema
+    status_code=status.HTTP_201_CREATED
+)
+async def create_user(
+    user_in: UserCreate,  # ← 请求体（Schema）
+    db: AsyncSession = Depends(get_db)  # ← 注入数据库会话
+):
+    """创建新用户（仅管理员）"""
+    # 1. 检查邮箱是否已存在
+    existing = await user_crud.get_by_email(db, user_in.email)
+    if existing:
+        raise HTTPException(
+            status_code=400, 
+            detail="该邮箱已被注册"
+        )
+    
+    # 2. 创建用户
+    user = await user_crud.create(db, user_in)  # ← 调用 CRUD
+    
+    # 3. 返回结果（ORM Model 自动转换为 Schema）
+    return user
+```
+
+---
+
+### **10.3 完整数据流向**
+
+#### **场景：用户注册 POST /api/v1/auth/register**
+
+```
+① 客户端发送请求
+   POST /api/v1/auth/register
+   Body: {
+     "email": "alice@example.com",
+     "username": "alice",
+     "password": "secret123"
+   }
+        ↓
+② FastAPI 路由匹配
+   找到 @router.post("/register") 的函数
+        ↓
+③ Pydantic 验证（Schema）
+   user_in: UserCreate ← 自动验证格式
+   - email 格式是否正确？
+   - username 长度是否符合？
+   - password 是否足够强？
+        ↓
+④ 依赖注入（Database Session）
+   db: AsyncSession = Depends(get_db)
+   - 创建数据库会话
+   - 准备事务
+        ↓
+⑤ CRUD 业务逻辑
+   user_crud.create(db, user_in)
+   - 检查邮箱是否存在
+   - 密码加密：bcrypt.hashpw()
+   - 创建 User 对象（ORM Model）
+        ↓
+⑥ 数据库操作（SQLAlchemy）
+   db.add(db_user)
+   await db.flush()
+   ↓ 生成 SQL
+   INSERT INTO users (email, username, hashed_password, ...)
+   VALUES ('alice@example.com', 'alice', '$2b$12$...', ...)
+        ↓
+⑦ 提交事务
+   await session.commit()
+   - 确保数据持久化
+        ↓
+⑧ 返回结果
+   return user  # ORM Model
+   ↓ FastAPI 自动转换
+   User (ORM) → UserResponse (Schema)
+   ↓ 序列化为 JSON
+   {
+     "id": 1,
+     "email": "alice@example.com",
+     "username": "alice",
+     "is_active": true,
+     "created_at": "2024-01-01T10:00:00Z"
+   }
+        ↓
+⑨ 响应客户端
+   HTTP/1.1 201 Created
+   Content-Type: application/json
+```
+
+---
+
+### **10.4 数据转换流程**
+
+```
+请求 JSON → Schema → ORM Model → Database → ORM Model → Schema → 响应 JSON
+
+详细说明：
+
+1. 请求 JSON {"email": "...", "password": "..."}
+   ↓
+2. Pydantic Schema 验证
+   UserCreate(email="...", password="...")
+   ↓
+3. CRUD 处理
+   创建 User(email="...", hashed_password="...")
+   ↓
+4. SQLAlchemy 生成 SQL
+   INSERT INTO users ...
+   ↓
+5. 数据库返回
+   User(id=1, email="...", ...)
+   ↓
+6. FastAPI 转换为 Schema
+   UserResponse(id=1, email="...", ...)
+   ↓
+7. 序列化为 JSON
+   {"id": 1, "email": "...", ...}
+```
+
+---
+
+### **10.5 关键概念对比**
+
+#### **Session（会话） vs Connection（连接）**
+
+```python
+# Connection - 底层数据库连接
+# 通常不直接使用
+
+# Session - 工作单元，管理事务
+async with async_session_maker() as session:
+    # 所有操作都在这个会话中
+    user = await session.get(User, user_id)
+    session.add(new_user)
+    await session.commit()
+```
+
+#### **flush() vs commit()**
+
+```python
+# flush() - 发送 SQL 到数据库，但不提交事务
+db.add(user)
+await db.flush()  # 执行 INSERT，但可以回滚
+user.id  # 现在有 ID 了
+
+# commit() - 提交事务，数据持久化
+await db.commit()  # 数据真正保存到数据库
+```
+
+#### **scalar_one_or_none() vs scalars().all()**
+
+```python
+# scalar_one_or_none() - 返回单个对象或 None
+result = await db.execute(select(User).where(User.id == 1))
+user = result.scalar_one_or_none()  # User 对象 或 None
+
+# scalars().all() - 返回列表
+result = await db.execute(select(User))
+users = result.scalars().all()  # [User, User, User, ...]
+```
+
+---
+
+### **10.6 常见操作示例**
+
+#### **查询**
+
+```python
+# 1. 根据 ID 查询
+user = await db.get(User, user_id)
+
+# 2. 条件查询
+result = await db.execute(
+    select(User).where(User.email == "alice@example.com")
+)
+user = result.scalar_one_or_none()
+
+# 3. 多条件查询
+result = await db.execute(
+    select(User)
+    .where(User.is_active == True)
+    .where(User.created_at > some_date)
+)
+
+# 4. 分页查询
+result = await db.execute(
+    select(User)
+    .order_by(User.id)
+    .offset(skip)
+    .limit(limit)
+)
+users = result.scalars().all()
+```
+
+#### **创建**
+
+```python
+# 创建单个对象
+user = User(
+    email="alice@example.com",
+    username="alice",
+    hashed_password="..."
+)
+db.add(user)
+await db.flush()  # 获取自动生成的 ID
+await db.refresh(user)  # 刷新对象
+```
+
+#### **更新**
+
+```python
+# 方式 1：直接修改属性
+user.username = "new_name"
+await db.flush()
+
+# 方式 2：批量更新
+for field, value in update_data.items():
+    setattr(user, field, value)
+await db.flush()
+```
+
+#### **删除**
+
+```python
+await db.delete(user)
+await db.flush()
+```
+
+---
+
+### **10.7 最佳实践**
+
+#### **✅ 使用依赖注入管理会话**
+
+```python
+# 推荐
+@router.get("/users")
+async def get_users(db: AsyncSession = Depends(get_db)):
+    users = await user_crud.get_list(db)
+    return users
+
+# 不推荐：手动管理会话
+async def get_users():
+    async with async_session_maker() as db:
+        # ...
+    # 容易忘记关闭或提交
+```
+
+#### **✅ 在 CRUD 层处理业务逻辑**
+
+```python
+# 推荐：CRUD 层
+class UserCRUD:
+    async def create(self, db, user_in):
+        # 业务逻辑在这里
+        hashed_password = get_password_hash(user_in.password)
+        db_user = User(...)
+        db.add(db_user)
+        return db_user
+
+# 路由层保持简洁
+@router.post("/users")
+async def create_user(user_in, db):
+    return await user_crud.create(db, user_in)
+```
+
+#### **✅ 使用 Schema 验证数据**
+
+```python
+# 推荐：Schema 验证
+@router.post("/users", response_model=UserResponse)
+async def create_user(user_in: UserCreate, db):
+    return await user_crud.create(db, user_in)
+
+# 不推荐：直接使用字典
+async def create_user(data: dict):
+    user = User(**data)  # 没有验证！
+```
+
+#### **✅ 总是使用 try-except-finally**
+
+```python
+# get_db() 已经帮你处理了
+async def get_db():
+    async with async_session_maker() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()  # 出错回滚
+            raise
+        finally:
+            await session.close()  # 确保关闭
+```
+
+---
+
+### **10.8 数据库迁移**
+
+**从 SQLite 切换到 MySQL：**
+
+1. 修改 `.env`：
+```env
+# 旧
+DATABASE_URL="sqlite+aiosqlite:///./app.db"
+
+# 新
+DATABASE_URL="mysql+aiomysql://user:password@localhost:3306/dbname"
+```
+
+2. 安装依赖：
+```bash
+pip install aiomysql pymysql
+```
+
+3. 重启应用 - 自动创建表！
+
+---
+
+## 11. 实战示例
 
 ### **示例 1：简单的 GET 路由**
 
